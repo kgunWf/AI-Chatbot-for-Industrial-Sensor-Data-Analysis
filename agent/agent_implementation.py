@@ -2,7 +2,7 @@
 
 import pandas as pd
 from pathlib import Path
-from langchain_community.llms import LlamaCpp
+#from langchain_community.llms import LlamaCpp
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import Tool
