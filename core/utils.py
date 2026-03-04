@@ -136,10 +136,11 @@ def get_odr_map(acq_dir: str | Path) -> dict[str, float]:
         for d, st in zip(descriptors, statuses):
             if not st.get("isActive", True):
                 continue
-
-            sub_key = d.get("sensorType", "").strip().lower()  # e.g. 'press', 'temp'
-            full_key = norm(f"{sensor_name}_{sub_key}")        # matches stdatalog_loader key: lps22hh_press
-
+            
+            raw_sub = d.get("sensorType", "").strip().lower()
+            short_sub = SUB.get(raw_sub, raw_sub)               # "press" → "prs"
+            full_key = norm(f"{sensor_name}_{short_sub}")       # → "lps22hh_prs"
+            
             odr = st.get("ODRMeasured") or st.get("ODR")
             if odr is not None:
                 try:

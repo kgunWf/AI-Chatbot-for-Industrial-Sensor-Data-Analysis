@@ -115,17 +115,18 @@ def extract_features_from_bag(bag: dict) -> dict:
             sig = df[["x", "y", "z"]].dropna().to_numpy()
             if sig.shape[0] < 50:
                 print(f"⚠️ Too few samples in {bag['sensor']}")
+                out['_valid'] = False
                 return out
 
             prefix = sensor_type
             out.update(extract_vector_stats(sig, prefix))
-
+            
+            axes_present = ["x", "y", "z"][:sig.shape[1]]
             # Compute FFT spectrum
-            if odr and odr > 100:
+            if odr and odr > 100 and sig.shape[1] == 3:   # only run FFT for full 3-axis
                 fft_vals = np.abs(rfft(sig - sig.mean(axis=0), axis=0))
                 freqs = rfftfreq(sig.shape[0], d=1.0 / odr)
-
-                for i, axis in enumerate(["x", "y", "z"][:sig.shape[1]]):
+                for i, axis in enumerate(axes_present):
                     magn = fft_vals[:, i]
 
                     # Spectral centroid
@@ -155,6 +156,7 @@ def extract_features_from_bag(bag: dict) -> dict:
 
         except KeyError as e:
             print(f"⚠️ Missing expected axis in {bag['sensor']}: {e}")
+            out['_valid'] = False
             return out
 
     # === AUDIO (mic) ===
@@ -169,6 +171,7 @@ def extract_features_from_bag(bag: dict) -> dict:
 
         if not mic_cols:
             print(f"⚠️ No mic column found in {bag['sensor']}")
+            out['_valid'] = False
             return out
 
         if len(mic_cols) > 1:
@@ -185,6 +188,7 @@ def extract_features_from_bag(bag: dict) -> dict:
         mic_series = df[mic_col].dropna()
         if mic_series.empty:
             print(f"⚠️ mic_series empty in {bag['sensor']}")
+            out['_valid'] = False
             return out
 
         first_val = mic_series.iloc[0]
@@ -193,16 +197,19 @@ def extract_features_from_bag(bag: dict) -> dict:
                 sig = np.concatenate([np.asarray(x).ravel() for x in mic_series])
             except Exception as e:
                 print(f"⚠️ mic flattening error: {e}")
+                out['_valid'] = False
                 return out
         else:
             try:
                 sig = pd.to_numeric(mic_series, errors="coerce").dropna().to_numpy()
             except Exception as e:
                 print(f"⚠️ mic signal conversion error: {e}")
+                out['_valid'] = False
                 return out
 
         if sig.size < 100:
             print(f"⚠️ mic signal too short ({sig.size}) in {bag['sensor']}")
+            out['_valid'] = False
             return out
 
         out.update(extract_scalar_stats(sig, "mic"))
@@ -224,11 +231,9 @@ def extract_features_from_bag(bag: dict) -> dict:
             samplerate = int(odr)  # microphone ODR
 
             frame_length = int(winlen * samplerate)
-
-            # Compute dynamic nfft (next power of 2 ≥ frame_length)
-            nfft = 1
-            while nfft < frame_length:
-                nfft *= 2
+            # Next power of 2 >= frame_length, robust for any ODR
+            nfft = 1 << (frame_length - 1).bit_length()
+            nfft = max(nfft, 512)   # enforce minimum sensible FFT size
 
             # Now extract MFCC safely
             mfccs = psf.mfcc(
@@ -268,10 +273,15 @@ def extract_features_from_bag(bag: dict) -> dict:
 
         if not found_cols:
             print(f"⚠️ No expected column found for {sensor_type} in {bag['sensor']}")
+            out['_valid'] = False
+            return out
 
     else:
         print(f"⚠️ Unknown sensor_type: {sensor_type} for {bag['sensor']}")
+        out['_valid'] = False
+        return out
 
+    out['_valid'] = True
     return out
 
 
