@@ -17,7 +17,7 @@ Thought: decide which tool to use
 Action: one of [{tool_names}]
 Action Input: input for the tool (empty if none)
 Observation: tool output
-Final Answer: short answer to the user
+Final Answer: answer that contains all the requested information, but compact
 
 Rules:
 - Do not answer without calling a tool
