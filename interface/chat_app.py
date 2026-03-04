@@ -292,7 +292,7 @@ with st.expander("ℹ️ How to Use This Agent"):
 st.markdown("---")
 st.markdown(
     '<div style="text-align: center; color: #666; font-size: 0.9rem;">'
-    '🎓 System and Device Programming - Project Q3 | Powered by Llama 3.1'
+    '🎓 System and Device Programming - Project Q3 | Powered by qwen2.5:7b-instruct'
     '</div>',
     unsafe_allow_html=True
 )

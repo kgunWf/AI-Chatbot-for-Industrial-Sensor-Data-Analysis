@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from scipy.fft import rfft, rfftfreq
 
-from data_loader import fetch_bags, filter_bags, group_by_sensor_name
+from utils import fetch_bags, filter_bags, group_by_sensor_name
 
 
 
