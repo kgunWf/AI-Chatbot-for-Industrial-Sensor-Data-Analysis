@@ -1,57 +1,33 @@
-
 # stdatalog_hsd_loader.py
 # -----------------------------------------------------------------------------
-# Loader that calls the same STDatalog Core APIs used in your notebook:
-#   from stdatalog_core.HSD.HSDatalog import HSDatalog
-#   hsd.validate_hsd_folder, hsd.create_hsd, hsd.get_sensor_list, hsd.get_sensor,
-#   hsd.get_dataframe / get_dataframe_gen
-#
-# Yields items shaped as:
-# {
-#   'condition': 'vel-fissa',
-#   'belt_status': 'OK',
-#   'sensor': 'IIS3DWB',
-#   'rpm': 'PMI_100rpm',
-#   'data': pd.DataFrame(...)
-# }
-#
-# Usage:
-#   from core.stdatalog_hsd_loader import iter_hsd_items
-#   for item in iter_hsd_items('/path/to/dataset_root', verbose=True):
-#       ...
-#
 from __future__ import annotations
 
 import os
 import re
 from pathlib import Path
+from types import GeneratorType
 from typing import Dict, Iterator, Optional, Iterable
 from utils import get_odr_map, norm, get_sensor_type, normalize_sensor_columns
 import pandas as pd
 
-# --- Optional: make local SDK repo importable if it's inside the project tree ---
-# (This mirrors what your notebook does by pushing '../../' on sys.path.)
 import sys as _sys
 _here = Path(__file__).resolve()
 for rel in ['..', '../..']:
     cand = (_here.parent / rel).resolve()
     if cand.exists() and str(cand) not in _sys.path:
         _sys.path.append(str(cand))
-# -------------------------------------------------------------------------------
 
 try:
-    from stdatalog_core.HSD.HSDatalog import HSDatalog  # SDK class used in your notebook
+    from stdatalog_core.HSD.HSDatalog import HSDatalog
 except Exception as _e:
     HSDatalog = None
     _IMPORT_ERR = _e
 else:
     _IMPORT_ERR = None
 
-# ---------------------- path metadata inference helpers ------------------------
+# ── path metadata helpers ────────────────────────────────────────────────────
 KNOWN_CONDITIONS = {'vel-fissa', 'no-load-cycles', 'vel_fissa', 'no_load_cycles'}
 RPM_RE = re.compile(r'^(PMI|PMS)[_-]?(\d+\s*rpm|\d+rpm|\d+)$', re.IGNORECASE)
-
-# --- add near top of stdatalog_hsd_loader.py ---
 
 
 def _find_token(parts: Iterable[str], pool: set[str]) -> Optional[str]:
@@ -60,6 +36,7 @@ def _find_token(parts: Iterable[str], pool: set[str]) -> Optional[str]:
             return p
     return None
 
+
 def _find_status(parts: Iterable[str]) -> Optional[str]:
     for p in parts:
         up = p.upper()
@@ -67,20 +44,22 @@ def _find_status(parts: Iterable[str]) -> Optional[str]:
             return p
     return None
 
+
 def _find_rpm(parts: Iterable[str]) -> Optional[str]:
-    norm = [p.replace('-', '_') for p in parts]
-    for p in norm:
+    normalized = [p.replace('-', '_') for p in parts]
+    for p in normalized:
         m = RPM_RE.match(p)
         if m:
             kind = m.group(1).upper()
             num = re.sub(r'[^0-9]', '', m.group(2))
             return f"{kind}_{num}rpm"
-    for i in range(len(norm)-1):
-        a, b = norm[i], norm[i+1]
-        if a.upper() in {'PMI','PMS'} and re.search(r'\d+', b):
+    for i in range(len(normalized) - 1):
+        a, b = normalized[i], normalized[i + 1]
+        if a.upper() in {'PMI', 'PMS'} and re.search(r'\d+', b):
             num = re.sub(r'[^0-9]', '', b)
             return f"{a.upper()}_{num}rpm"
     return None
+
 
 def _infer_meta_from_path(acq_dir: Path) -> Dict[str, str]:
     parts = acq_dir.parts
@@ -89,70 +68,119 @@ def _infer_meta_from_path(acq_dir: Path) -> Dict[str, str]:
     rpm = _find_rpm(parts) or 'NO_RPM_VALUE'
     if condition == 'vel_fissa':
         condition = 'vel-fissa'
-    return {'condition': condition, 'belt_status': status, 'rpm': rpm, 'full_path': str(acq_dir)}
-# -------------------------------------------------------------------------------
+    return {'condition': condition, 'belt_status': status,
+            'rpm': rpm, 'full_path': str(acq_dir)}
+
 
 def _is_hsd_folder(dir_path: Path) -> bool:
-    # Heuristics: presence of device config json or binary sensor files
     if not dir_path.is_dir():
         return False
     for name in ['deviceConfig.json', 'DeviceConfig.json', 'hsd.json']:
         if (dir_path / name).exists():
             return True
-    # Fallback: contains at least one .dat file
-    return any(p.suffix.lower()=='.dat' for p in dir_path.iterdir() if p.is_file())
+    return any(p.suffix.lower() == '.dat' for p in dir_path.iterdir()
+               if p.is_file())
+
 
 def _normalize_dataframe(obj) -> Optional[pd.DataFrame]:
-    """Accept DataFrame or dict/list of DataFrames and return a single DataFrame."""
+    """
+    Collapse whatever get_dataframe() returns into a single DataFrame.
+
+    The HSD v1 SDK always returns a LIST of DataFrames (one per acquisition
+    chunk / timestamp block).  Each chunk has identical columns.  We must
+    ROW-concatenate them, not column-join them.
+
+    Handled types
+    -------------
+    list / tuple   → row-concat all DataFrame elements (axis=0)
+    GeneratorType  → same after exhausting
+    dict           → col-join values (legacy path, kept for safety)
+    DataFrame      → returned as-is
+    """
     if obj is None:
         return None
 
-    # If it's already a DataFrame
+    if isinstance(obj, GeneratorType):
+        obj = list(obj)
+
     if isinstance(obj, pd.DataFrame):
         return obj
 
-    # If it's a dict: try to extract and combine all DataFrames
+    if isinstance(obj, (list, tuple)):
+        frames = [v for v in obj if isinstance(v, pd.DataFrame)]
+        if not frames:
+            return None
+        # Row-concatenate: each element is a time-contiguous chunk
+        return pd.concat(frames, axis=0, ignore_index=True)
+
     if isinstance(obj, dict):
-        parts = []
+        # Some future SDK version might return a dict — col-join as fallback
+        frames = []
         for key, val in obj.items():
             if isinstance(val, pd.DataFrame):
-                parts.append(val)
-            elif hasattr(val, "__array__"):  # e.g. numpy array
-                parts.append(pd.DataFrame(val, columns=[key]))
-        if not parts:
-            return None
-        return pd.concat(parts, axis=1, join="outer").sort_index()
-
-    # If it's a list or tuple
-    if isinstance(obj, (list, tuple)):
-        parts = []
-        for val in obj:
-            if isinstance(val, pd.DataFrame):
-                parts.append(val)
+                frames.append(val)
             elif hasattr(val, "__array__"):
-                parts.append(pd.DataFrame(val))
-        if not parts:
+                frames.append(pd.DataFrame(val, columns=[key]))
+        if not frames:
             return None
-        return pd.concat(parts, axis=1, join="outer").sort_index()
+        return pd.concat(frames, axis=1, join="outer").sort_index()
 
-    # fallback
     return None
 
 
 def _iter_acquisition_dirs(root: Path) -> Iterator[Path]:
-    # Consider leaf directories named STWIN_* or any dir that passes _is_hsd_folder
-    
+    """Yield each unique HSD acquisition directory under root."""
+    seen: set[Path] = set()
     for d in root.rglob('*'):
-        if d.is_dir() and (d.name.upper().startswith('STWIN_') or _is_hsd_folder(d)):
-            if _is_hsd_folder(d):
-                yield d
-        elif d.suffix.lower()=='.dat':
-                yield d.parent
-                return
+        candidate: Optional[Path] = None
+        if d.is_dir() and _is_hsd_folder(d):
+            candidate = d
+        elif d.suffix.lower() == '.dat':
+            candidate = d.parent
+        if candidate is not None and candidate not in seen:
+            seen.add(candidate)
+            yield candidate
 
-def iter_hsd_items(root: str | Path, only_active: bool=True, verbose: bool=False) -> Iterator[Dict[str, object]]:
+
+# ── main iterator ────────────────────────────────────────────────────────────
+
+def _raw_col_fingerprint(df: pd.DataFrame) -> frozenset[str]:
+    """
+    Return a frozenset of the non-time raw column headers in a DataFrame.
+    Used to detect when two virtual sensor names resolve to the same
+    underlying .dat data (SDK bug for combined-dat chips).
+
+    e.g. DataFrame(['Time','TEMP [Celsius]']) → frozenset({'TEMP [Celsius]'})
+    """
+    return frozenset(
+        c for c in df.columns
+        if "time" not in c.lower()
+    )
+
+
+def iter_hsd_items(
+    root: str | Path,
+    only_active: bool = True,
+    verbose: bool = False,
+) -> Iterator[Dict[str, object]]:
+    """
+    Yield one bag dict per active sub-sensor per acquisition folder.
+
+    SDK behaviour (HSD v1 + stdatalog_core):
+    - get_sensor_list()  returns a list of dicts, one per virtual sub-sensor
+                         e.g. [{'hts221_temp': {...}}, {'hts221_hum': {...}}]
+    - get_sensor()       accepts a virtual sub-sensor name string
+    - get_dataframe()    ALWAYS returns a list[DataFrame] — one element per
+                         acquisition chunk.  The list must be row-concatenated.
+    - BUG: for combined-dat chips (hts221, lps22hh) the SDK returns the SAME
+           data (sub-sensor[0]'s column) regardless of which virtual name is
+           passed.  Detection: two virtual names whose concatenated DataFrames
+           share identical non-time column headers → deduplicate by raw header.
+    """
     if HSDatalog is None:
-        raise ImportError(f"Could not import HSDatalog from stdatalog_core: {_IMPORT_ERR}")
+        raise ImportError(
+            f"Could not import HSDatalog from stdatalog_core: {_IMPORT_ERR}"
+        )
 
     root = Path(root)
     if not root.exists():
@@ -171,68 +199,102 @@ def iter_hsd_items(root: str | Path, only_active: bool=True, verbose: bool=False
                 continue
 
             hsd_instance = hsd.create_hsd(acquisition_folder=str(acq_dir))
+            odr_map      = get_odr_map(acq_dir)
 
-            # Build ODR map for this folder
-            odr_map = get_odr_map(acq_dir)
+            # ── 1. Resolve sensor names ──────────────────────────────────────
+            # get_sensor_list returns list[dict] in HSD v1:
+            #   [{'hts221_temp': {odr, dim, ...}}, {'hts221_hum': {...}}, ...]
+            # Extract the string key from each dict (or use as-is if already str).
+            raw_list = hsd.get_sensor_list(hsd_instance, only_active=only_active)
+            sensor_names: list[str] = []
+            for item in raw_list:
+                if isinstance(item, str):
+                    sensor_names.append(norm(item))
+                elif isinstance(item, dict):
+                    # Each dict has exactly one key: the sensor name
+                    sensor_names.extend(norm(k) for k in item.keys())
+                else:
+                    # Fallback: SDK object with a name attribute
+                    try:
+                        sensor_names.append(
+                            norm(hsd.get_sensor_name(hsd_instance, item))
+                        )
+                    except Exception:
+                        pass
 
-            # Fetch list of active sensors
-            sensor_names = hsd.get_sensor_list(hsd_instance, only_active=only_active)
+            # ── 2. Fetch each virtual sub-sensor and deduplicate by raw data ─
+            #
+            # The SDK bug: for combined-dat chips, every virtual sub-sensor
+            # name resolves to the SAME raw data (sub-sensor[0]'s column).
+            # We detect this by comparing the frozenset of non-time column
+            # headers across all virtual names for the same parent chip.
+            #
+            # Strategy: iterate all virtual names; for each one, fetch and
+            # row-concat the list of chunk DataFrames.  Track which (parent_chip,
+            # raw_col_fingerprint) pairs we have already yielded — if a new
+            # virtual name returns an already-seen fingerprint for that chip,
+            # skip it (it's a duplicate).  This handles both the broken SDK
+            # case (same column returned twice) and a hypothetical fixed SDK
+            # (different columns returned for each virtual name).
 
-            if sensor_names and not isinstance(sensor_names[0], str):
-                sensor_names = [hsd.get_sensor_name(hsd_instance, s) for s in sensor_names]
+            # keyed by (parent_chip, frozenset_of_raw_cols) → already yielded
+            seen_fingerprints: set[tuple[str, frozenset]] = set()
 
             for sensor_name in sensor_names:
-                sensor = hsd.get_sensor(hsd_instance, sensor_name)
-                df_obj = hsd.get_dataframe(hsd_instance, sensor)
+                parent_chip = sensor_name.split("_")[0]
 
-                # Multi-subsensor case (dict of DataFrames)
-                if isinstance(df_obj, dict):
-                    for sub_key, sub_df in df_obj.items():
-                        df = _normalize_dataframe(sub_df)
-                        if df is None:
-                            continue
+                try:
+                    sensor_obj = hsd.get_sensor(hsd_instance, sensor_name)
+                    df_obj     = hsd.get_dataframe(hsd_instance, sensor_obj)
+                except Exception as e:
+                    if verbose:
+                        print(f"⚠️  get_dataframe failed for {sensor_name}: {e}")
+                    continue
 
-                        full_sensor_name = norm(f"{sensor_name}_{sub_key}")  # e.g. lps22hh_PRESS
-                        sensor_type = get_sensor_type(full_sensor_name)
-                        odr = odr_map.get(full_sensor_name)
-                        df = normalize_sensor_columns(df, sensor_name)
-                        yield {
-                            'condition': meta['condition'],
-                            'belt_status': meta['belt_status'],
-                            'sensor': full_sensor_name,
-                            'sensor_type': sensor_type,
-                            'rpm': meta['rpm'],
-                            'data': df,
-                            'path': meta['full_path'],
-                            'odr': odr,
-                        }
+                # Row-concat the list of chunk DataFrames
+                df = _normalize_dataframe(df_obj)
+                if df is None or df.empty:
+                    if verbose:
+                        print(f"⚠️  Empty data for {sensor_name}")
+                    continue
 
-                # Single-sensor case
-                else:
-                    df = _normalize_dataframe(df_obj)
-                    if df is None:
-                        continue
+                # Deduplicate: has this exact raw data already been yielded
+                # for this parent chip?
+                fingerprint = (parent_chip, _raw_col_fingerprint(df))
+                if fingerprint in seen_fingerprints:
+                    if verbose:
+                        print(
+                            f"⚠️  Skipping {sensor_name}: SDK returned duplicate "
+                            f"data (same columns as a previously processed "
+                            f"sub-sensor of {parent_chip}). "
+                            f"Raw cols: {_raw_col_fingerprint(df)}"
+                        )
+                    continue
+                seen_fingerprints.add(fingerprint)
 
-                    full_sensor_name = norm(str(sensor_name))
-                    sensor_type = get_sensor_type(full_sensor_name)
-                    odr = odr_map.get(full_sensor_name)
-                    df = normalize_sensor_columns(df, sensor_name)
-                    yield {
-                        'condition': meta['condition'],
-                        'belt_status': meta['belt_status'],
-                        'sensor': full_sensor_name,
-                        'sensor_type': sensor_type,
-                        'rpm': meta['rpm'],
-                        'data': df,
-                        'path': meta['full_path'],
-                        'odr': odr,
-                    }
+                # Normalize column names (raw SDK headers → 'time','prs','temp',…)
+                # Pass the virtual sensor name so normalize_sensor_columns can
+                # use sensor_type hints where needed (e.g. x/y/z for acc/gyro).
+                df = normalize_sensor_columns(df.copy(), sensor_name)
+
+                sensor_type = get_sensor_type(sensor_name)
+                odr         = odr_map.get(sensor_name)
+
+                yield {
+                    'condition':   meta['condition'],
+                    'belt_status': meta['belt_status'],
+                    'sensor':      sensor_name,
+                    'sensor_type': sensor_type,
+                    'rpm':         meta['rpm'],
+                    'data':        df,
+                    'path':        meta['full_path'],
+                    'odr':         odr,
+                }
 
         except Exception as e:
             if verbose:
                 print(f"⚠️  Skipping acquisition {acq_dir}: {e}")
             continue
-
 
 
 __all__ = ['iter_hsd_items']

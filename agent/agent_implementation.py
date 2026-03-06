@@ -2,7 +2,7 @@
 
 import pandas as pd
 from pathlib import Path
-from langchain_community.llms import LlamaCpp
+#from langchain_community.llms import LlamaCpp
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import Tool
@@ -12,7 +12,7 @@ from prompt_gen import system_prompt
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODEL_PATH = BASE_DIR / "models" / "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
-CSV_PATH = BASE_DIR / "core" / "output_dir" / "cleaned_df.csv"
+CSV_PATH = BASE_DIR / "output_dir" / "processed" / "cleaned_df.csv"
 DATA_PATH = BASE_DIR / "data" / "Sensor_STWIN"
 
 class SensorDataAgent:

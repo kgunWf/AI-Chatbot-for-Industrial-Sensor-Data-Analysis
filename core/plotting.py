@@ -3,59 +3,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.fft import rfft, rfftfreq
-import matplotlib.pyplot as plt
 
-from stdatalog_loader import iter_hsd_items
+from utils import fetch_bags, filter_bags, group_by_sensor_name
 
-
-def load_raw_bags(root: str, limit: int | None = None, verbose: bool = False) -> list[dict]:
-    bags = []#bunu dd yap
-    for i, item in enumerate(iter_hsd_items(root, only_active=True, verbose=verbose), start=1):
-        bags.append(item)
-        if limit is not None and i >= limit:
-            break
-    return bags
-    
-#we can group by specific sensor names such as "iis3dwb_acc","iis2dh_acc","ism330dhcx_acc"
-def group_by_sensor_name(bags):
-    groups = {}
-    for bag in bags:
-        sensor = bag["sensor"]
-        groups.setdefault(sensor, []).append(bag)
-    return groups
-
-def filter_bags(
-    bags: list[dict],
-    sensor_type: str | None = None,
-    sensor: str | None = None,
-    belt_status: str | None = None,
-    condition: str | None = None,
-    rpm: str |None=None,
-) -> list[dict]:
-    """
-    Return only the bags that match the given criteria.
-    Any argument left as None is ignored.
-    """
-    out = []
-    for b in bags:
-        if sensor_type is not None and b["sensor_type"] != sensor_type:
-            continue #keep only the bags that match the given sensor type
-        if sensor is not None and b["sensor"] != sensor:
-            continue #keep only the bags that match the given sensor name (e.g. IIS3DWB etc.)
-        #burda ko, low, 2mm tek tek de filtrelenebilir
-        if belt_status is not None and str(b["belt_status"]) != belt_status:
-            continue #keep only the bags that match the given belt status(e.g. OK, KO_HIGH_2mm, KO_LOW_2mm,)#
-        if condition is not None and str(b["condition"]) != condition:
-            continue #keep only the bags that match the given condition(e.g. vel-fissa, no-load-cycles)
-        if rpm is not None and str(b["rpm"]) != rpm:
-            continue #keep only the bags that match the given condition(e.g. PMS_50rpm etc)
-        out.append(b)
-    return out
-
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from scipy.fft import rfft, rfftfreq
 
 
 def plot_frequency_spectrum(bag: dict, axis: str | None = None):
@@ -187,7 +137,6 @@ def is_bag_plottable(bag: dict) -> bool:
     """
     sensor_type = bag["sensor_type"]
     df = bag["data"]
-    cols = list(df.columns)
 
     # Vector sensors: need x, y, z
     if sensor_type in {"acc", "gyro", "mag"}:
@@ -211,11 +160,6 @@ def is_bag_plottable(bag: dict) -> bool:
 
     # Anything else: not supported (for now)
     return False
-
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
 
 def plot_time_series(bag: dict, axis: str | None = None):
     """
@@ -426,10 +370,10 @@ def resolve_experiment_path(
     belt_status: str,
     rpm: str | None,
     stwin: str | None,
-) -> tuple[str, str | None, str | None]:
+) -> tuple[str, str | None, str | None, str]:
     """
     Resolve valid rpm/stwin and build the experiment path.
-    Returns: (path, rpm, stwin)
+    Returns: (path, rpm, stwin, belt_status)
     """
 
     if belt_status not in {"OK","KO_HIGH_2mm", "KO_LOW_2mm", "KO_HIGH_4mm", "KO_LOW_4mm"}:
@@ -495,7 +439,7 @@ def plotting(
     # -----------------------
     # 2) Load raw bags
     # -----------------------
-    bags = load_raw_bags(root=path, limit=limit, verbose=False)
+    bags = fetch_bags(root=path, limit=limit, only_active=True, verbose=False)
 
     if not bags:
         print(f"⚠️ No raw data found at path:\n{path}")
