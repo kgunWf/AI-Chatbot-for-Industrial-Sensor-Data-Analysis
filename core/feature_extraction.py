@@ -266,7 +266,7 @@ def extract_features_from_bag(bag: dict) -> dict:
                 found_cols.append(col)
                 sig = df[col].dropna().to_numpy()
                 print(f"🪲 Found valid column '{col}' with {sig.size} samples")
-                if sig.size < 2:
+                if sig.size < 10:
                     print(f"⚠️ Not enough samples in {col}")
                     continue
                 out.update(extract_scalar_stats(sig, col))
