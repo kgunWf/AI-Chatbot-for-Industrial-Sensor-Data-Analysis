@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.feature_selection import SelectKBest, f_classif, VarianceThreshold
 from sklearn.preprocessing import LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
@@ -37,6 +37,16 @@ def analyze_global_features(df: pd.DataFrame, sensor_subset: list[str] = None, m
 
     le = LabelEncoder()
     y_encoded = le.fit_transform(y)
+
+    # Remove constant features to avoid warnings in ANOVA
+    vt = VarianceThreshold()
+    vt.fit(X)
+    non_constant_mask = vt.variances_ > 0
+    constant_features = X.columns[~non_constant_mask].tolist()
+    if constant_features:
+        print(f"Removing constant features: {constant_features}")
+    X = X.loc[:, non_constant_mask]
+    feature_cols = [c for c in feature_cols if c not in constant_features]
 
     # -----------------------------
     # 2) Compute global importances
